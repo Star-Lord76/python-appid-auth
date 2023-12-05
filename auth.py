@@ -4,15 +4,19 @@ import json
 import base64
 import functools
 
+from dotenv import load_dotenv
+
 from flask import Flask, redirect, request, session
 
 import requests
 from requests.auth import HTTPBasicAuth
 from requests.structures import CaseInsensitiveDict
 
-class AppIDAuthProvider:
 
+class AppIDAuthProvider:
     # App ID
+
+    load_dotenv()
 
     APPID_MGMT_TOKEN = ""
 
@@ -36,7 +40,7 @@ class AppIDAuthProvider:
 
     def __init__(self):
 
-        logging.basicConfig(level = logging.INFO)
+        logging.basicConfig(level=logging.INFO)
 
         self.flask = Flask(__name__)
         self.flask.secret_key = os.environ["SESSION_SECRET_KEY"]
@@ -46,23 +50,26 @@ class AppIDAuthProvider:
             # This route is pre-registered with the App ID service instance as
             # the 'redirect' URI, so that it can redirect the flow back into
             # the application after successful authentication
+            logging.info("afterauth")
             err_msg = ""
             if "code" in request.args:
                 code = request.args.get("code")
                 # Send the authorization code to the token endpoint to retrieve access_token and id_token
                 token_endpoint = AppIDAuthProvider.OAUTH_SERVER_URL + "/token"
                 resp = requests.post(token_endpoint,
-                                     data = {"client_id": AppIDAuthProvider.CLIENT_ID,
-                                             "grant_type": "authorization_code",
-                                             "redirect_uri": AppIDAuthProvider.REDIRECT_URI,
-                                             "code": code},
-                                     auth = HTTPBasicAuth(AppIDAuthProvider.CLIENT_ID, AppIDAuthProvider.CLIENT_SECRET))
+                                     data={"client_id": AppIDAuthProvider.CLIENT_ID,
+                                           "grant_type": "authorization_code",
+                                           "redirect_uri": AppIDAuthProvider.REDIRECT_URI,
+                                           "code": code},
+                                     auth=HTTPBasicAuth(AppIDAuthProvider.CLIENT_ID, AppIDAuthProvider.CLIENT_SECRET))
                 resp_json = resp.json()
                 if "error_description" in resp_json:
-                    err_msg = "Could not retrieve user tokens, {}".format(resp_json["error_description"])
+                    err_msg = "Could not retrieve user tokens, {}".format(
+                        resp_json["error_description"])
                 elif "id_token" in resp_json and "access_token" in resp_json:
                     access_token = resp_json["access_token"]
-                    user_email, user_id = AppIDAuthProvider._get_user_info(resp_json["id_token"])
+                    user_email, user_id = AppIDAuthProvider._get_user_info(
+                        resp_json["id_token"])
                     resp_json = AppIDAuthProvider._get_user_roles(user_id)
                     if "roles" in resp_json:
                         session[AppIDAuthProvider.APPID_USER_TOKEN] = access_token
@@ -71,7 +78,8 @@ class AppIDAuthProvider:
                     else:
                         err_msg = "Could not retrieve user roles"
                         if "error_description" in resp_json:
-                            err_msg = err_msg + ", " + resp_json["error_description"]
+                            err_msg = err_msg + ", " + \
+                                resp_json["error_description"]
                 else:
                     err_msg = "Did not receive 'id_token' and / or 'access_token'"
             else:
@@ -79,7 +87,9 @@ class AppIDAuthProvider:
             if err_msg:
                 logging.error(err_msg)
                 session[AppIDAuthProvider.AUTH_ERRMSG] = err_msg
-            endpoint_context = session.pop(AppIDAuthProvider.ENDPOINT_CONTEXT, None)
+            endpoint_context = session.pop(
+                AppIDAuthProvider.ENDPOINT_CONTEXT, None)
+            logging.info(f"ENDPOINT CONTEXT: {endpoint_context}")
             return redirect(endpoint_context)
 
     @classmethod
@@ -107,8 +117,8 @@ class AppIDAuthProvider:
             token = session[cls.APPID_USER_TOKEN]
             introspect_endpoint = cls.OAUTH_SERVER_URL + "/introspect"
             resp = requests.post(introspect_endpoint,
-                                 data = {"token": token},
-                                 auth = HTTPBasicAuth(cls.CLIENT_ID, cls.CLIENT_SECRET))
+                                 data={"token": token},
+                                 auth=HTTPBasicAuth(cls.CLIENT_ID, cls.CLIENT_SECRET))
             resp_json = resp.json()
             if "active" in resp_json and resp_json["active"]:
                 return True, ""
@@ -117,7 +127,8 @@ class AppIDAuthProvider:
                 session.pop(cls.APPID_USER_ROLES, None)
                 err_msg = ""
                 if "error_description" in resp_json:
-                    err_msg = "Could not introspect user token, {}".format(resp_json["error_description"])
+                    err_msg = "Could not introspect user token, {}".format(
+                        resp_json["error_description"])
                     logging.error(err_msg)
                 return False, err_msg
         else:
@@ -130,52 +141,55 @@ class AppIDAuthProvider:
         if cls.ENDPOINT_CONTEXT not in session:
             session[cls.ENDPOINT_CONTEXT] = request.path
         authorization_endpoint = cls.OAUTH_SERVER_URL + "/authorization"
+        logging.info("auth")
         return redirect("{}?client_id={}&response_type=code&redirect_uri={}&scope=openid".format(authorization_endpoint, cls.CLIENT_ID, cls.REDIRECT_URI))
 
     # This method and the next method use base64 decoding to retrive user's ID and email
     # stored inside the id_token
     @staticmethod
     def _get_user_info(id_token):
-        decoded_id_token = AppIDAuthProvider._base64_decode(id_token.split('.')[1])
+        decoded_id_token = AppIDAuthProvider._base64_decode(
+            id_token.split('.')[1])
         id_token_details = json.loads(decoded_id_token)
         return id_token_details["email"], id_token_details["sub"]
 
     @staticmethod
     def _base64_decode(data):
-        data += '=' * (4 - len(data) % 4) # pad the data as needed
+        data += '=' * (4 - len(data) % 4)  # pad the data as needed
         return base64.b64decode(data).decode('utf-8')
 
     @classmethod
     def _get_user_roles(cls, user_id):
         resp = cls._exec_user_roles_req(user_id)
         if resp.status_code == 403:
-            return { "error_description": "Forbidden" }
+            return {"error_description": "Forbidden"}
         if resp.status_code == 401:
             # App ID management access token has expired, retrieve it again
             err_msg = cls._get_appid_mgmt_access_token()
             if err_msg:
-                return { "error_description": err_msg }
+                return {"error_description": err_msg}
             # Try the previous call again now that the App ID management
             # access token has been refreshed
             resp = cls._exec_user_roles_req(user_id)
             if resp.status_code == 403:
-                return { "error_description": "Forbidden" }
+                return {"error_description": "Forbidden"}
         resp_json = resp.json()
         if "roles" in resp_json:
             roles = []
             for role in resp_json["roles"]:
                 roles.append(role["name"])
-            return { "roles": roles }
+            return {"roles": roles}
         elif "Error" in resp_json and "Status" in resp_json["Error"]:
             # resp_json contains "Error" if the error is emitted by IAM
-            return { "error_description": resp_json["Error"]["Status"] }
+            return {"error_description": resp_json["Error"]["Status"]}
         elif "errorCode" in resp_json:
             # resp_json contains "errorCode" if the error is emitted by App ID
-            return { "error_description": resp_json["errorCode"] }
+            return {"error_description": resp_json["errorCode"]}
 
     @classmethod
     def _exec_user_roles_req(cls, user_id):
-        user_roles_endpoint = cls.MANAGEMENT_URL + "/users/{}/roles".format(user_id)
+        user_roles_endpoint = cls.MANAGEMENT_URL + \
+            "/users/{}/roles".format(user_id)
         headers = CaseInsensitiveDict()
         headers["Authorization"] = "Bearer {}".format(cls.APPID_MGMT_TOKEN)
         return requests.get(user_roles_endpoint, headers=headers)
@@ -183,8 +197,8 @@ class AppIDAuthProvider:
     @classmethod
     def _get_appid_mgmt_access_token(cls):
         resp = requests.post(cls.IAM_TOKEN_ENDPOINT,
-                             data = {"grant_type": "urn:ibm:params:oauth:grant-type:apikey",
-                                     "apikey": os.environ["IBM_CLOUD_APIKEY"]})
+                             data={"grant_type": "urn:ibm:params:oauth:grant-type:apikey",
+                                   "apikey": os.environ["IBM_CLOUD_APIKEY"]})
         resp_json = resp.json()
         if "access_token" in resp_json:
             cls.APPID_MGMT_TOKEN = resp_json["access_token"]
